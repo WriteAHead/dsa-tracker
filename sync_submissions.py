@@ -3,8 +3,8 @@ import re
 import json
 import requests
 from pathlib import Path
+from bs4 import BeautifulSoup
 
-# User credentials set directly for writeAhead
 CF_USERNAME = os.environ.get("CF_USERNAME", "writeAhead")
 LC_USERNAME = os.environ.get("LC_USERNAME", "writeAhead")
 
@@ -27,14 +27,16 @@ def get_file_extension(language_str: str) -> str:
     return "txt"
 
 # -------------------------------------------------------------------
-# CODEFORCES SYNC
+# CODEFORCES SYNC (Fetches full source code via web scraping)
 # -------------------------------------------------------------------
 def sync_codeforces():
     print(f"--- Fetching Codeforces submissions for {CF_USERNAME} ---")
-    url = f"https://codeforces.com/api/user.status?handle={CF_USERNAME}&from=1&count=50"
+    url = f"https://codeforces.com/api/user.status?handle={CF_USERNAME}&from=1&count=20"
     
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
     try:
-        res = requests.get(url, timeout=15)
+        res = requests.get(url, headers=headers, timeout=15)
         data = res.json()
         if data.get("status") != "OK":
             print(f"Codeforces API error: {data.get('comment')}")
@@ -43,8 +45,7 @@ def sync_codeforces():
         print(f"Failed to query Codeforces: {e}")
         return
 
-    submissions = data.get("result", [])
-    accepted_subs = [s for s in submissions if s.get("verdict") == "OK"]
+    accepted_subs = [s for s in data.get("result", []) if s.get("verdict") == "OK"]
 
     for sub in accepted_subs:
         problem = sub.get("problem", {})
@@ -52,64 +53,62 @@ def sync_codeforces():
         index = problem.get("index")
         name = problem.get("name", "Unknown")
         lang = sub.get("programmingLanguage", "")
-        
-        if not contest_id or not index:
+        sub_id = sub.get("id")
+
+        if not contest_id or not index or not sub_id:
             continue
 
         folder_name = clean_slug(f"{contest_id}{index}_{name}")
         target_dir = Path("Codeforces") / folder_name
-        
         ext = get_file_extension(lang)
         solution_file = target_dir / f"solution.{ext}"
 
         if solution_file.exists():
             continue
 
+        # Fetch actual code string from CF submission page
+        sub_url = f"https://codeforces.com/contest/{contest_id}/submission/{sub_id}"
+        code_content = ""
+        try:
+            page_res = requests.get(sub_url, headers=headers, timeout=15)
+            soup = BeautifulSoup(page_res.text, "html.parser")
+            source_elem = soup.find("pre", id="program-source-code")
+            if source_elem:
+                code_content = source_elem.get_text()
+        except Exception as err:
+            print(f"Could not scrape code for CF sub {sub_id}: {err}")
+
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        readme_file = target_dir / "README.md"
+        # Write README
         problem_url = f"https://codeforces.com/problemset/problem/{contest_id}/{index}"
+        readme_file = target_dir / "README.md"
         readme_content = f"# {contest_id}{index} - {name}\n\n" \
                          f"- **Problem URL:** [{problem_url}]({problem_url})\n" \
                          f"- **Language:** {lang}\n" \
-                         f"- **Submission ID:** {sub.get('id')}\n"
+                         f"- **Submission ID:** {sub_id}\n"
         readme_file.write_text(readme_content, encoding="utf-8")
 
-        meta_content = f"// Codeforces Submission ID: {sub.get('id')}\n" \
-                       f"// Problem: {name} ({contest_id}{index})\n" \
-                       f"// Language: {lang}\n\n" \
-                       f"// Accepted submission logged from Codeforces."
-        solution_file.write_text(meta_content, encoding="utf-8")
-        print(f"[Codeforces] Synced: {folder_name}")
+        # Write actual code
+        if not code_content:
+            code_content = f"// Codeforces Submission ID: {sub_id}\n// Code scraping restricted or submission page unavailable."
+
+        solution_file.write_text(code_content, encoding="utf-8")
+        print(f"[Codeforces] Synced code for: {folder_name}")
 
 # -------------------------------------------------------------------
-# LEETCODE SYNC
+# LEETCODE SYNC (Fetches recent AC problem links & code snippets)
 # -------------------------------------------------------------------
 def sync_leetcode():
     print(f"--- Fetching LeetCode submissions for {LC_USERNAME} ---")
-    url = "https://leetcode.com/graphql"
-    query = """
-    query recentAcSubmissions($username: String!, $limit: Int!) {
-      recentAcSubmissionList(username: $username, limit: $limit) {
-        id
-        title
-        titleSlug
-        timestamp
-      }
-    }
-    """
-    
-    payload = {
-        "query": query,
-        "variables": {"username": LC_USERNAME, "limit": 20}
-    }
+    url = f"https://alfa-leetcode-api.onrender.com/acSubmission?username={LC_USERNAME}&limit=10"
 
     try:
-        res = requests.post(url, json=payload, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        res = requests.get(url, timeout=15)
         data = res.json()
-        ac_list = data.get("data", {}).get("recentAcSubmissionList", [])
+        ac_list = data.get("submission", []) if isinstance(data, dict) else []
     except Exception as e:
-        print(f"Failed to query LeetCode API: {e}")
+        print(f"Failed to fetch LeetCode data: {e}")
         return
 
     if not ac_list:
@@ -119,12 +118,18 @@ def sync_leetcode():
     for sub in ac_list:
         title = sub.get("title")
         slug = sub.get("titleSlug")
-        
+        lang = sub.get("lang", "txt")
+        code = sub.get("code", "")
+
+        if not slug:
+            continue
+
         folder_name = clean_slug(slug)
         target_dir = Path("LeetCode") / folder_name
-        solution_file = target_dir / "solution.txt"
+        ext = get_file_extension(lang)
+        solution_file = target_dir / f"solution.{ext}"
 
-        if target_dir.exists():
+        if solution_file.exists():
             continue
 
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -133,13 +138,14 @@ def sync_leetcode():
         readme_file = target_dir / "README.md"
         readme_content = f"# {title}\n\n" \
                          f"- **Problem Link:** [{problem_url}]({problem_url})\n" \
-                         f"- **Status:** Accepted\n"
+                         f"- **Language:** {lang}\n"
         readme_file.write_text(readme_content, encoding="utf-8")
 
-        info_content = f"# LeetCode Submission - {title}\n" \
-                       f"# Link: {problem_url}\n"
-        solution_file.write_text(info_content, encoding="utf-8")
-        print(f"[LeetCode] Synced: {folder_name}")
+        if not code:
+            code = f"# LeetCode Submission - {title}\n# Link: {problem_url}\n"
+
+        solution_file.write_text(code, encoding="utf-8")
+        print(f"[LeetCode] Synced code for: {folder_name}")
 
 if __name__ == "__main__":
     sync_codeforces()

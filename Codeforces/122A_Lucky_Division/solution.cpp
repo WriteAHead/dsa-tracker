@@ -1,5 +1,3 @@
-// Codeforces Submission ID: 384856190
 // Problem: Lucky Division (122A)
 // Language: C++17 (GCC 7-32)
-
-// Accepted submission logged from Codeforces.
+// Submission Link: https://codeforces.com/contest/122/submission/384856190

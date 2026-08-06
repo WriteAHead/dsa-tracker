@@ -1,0 +1,2 @@
+# LeetCode Submission - Maximize Pair Strength Using GCD
+# Link: https://leetcode.com/problems/maximize-pair-strength-using-gcd/

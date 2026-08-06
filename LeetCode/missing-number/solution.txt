@@ -1,0 +1,2 @@
+# LeetCode Submission - Missing Number
+# Link: https://leetcode.com/problems/missing-number/
